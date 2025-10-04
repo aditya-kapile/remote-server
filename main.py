@@ -33,6 +33,28 @@ _candidates = [
 _DB_DIR = _first_writable_dir(_candidates)
 BD_PATH = os.path.join(_DB_DIR, "expense-tracker.db")
 
+
+#Create a FastMCP server instance
+mcp = FastMCP(name = "expense-tracker")
+
+def init_db():
+    """Initializes the database."""
+    with sqlite3.connect(BD_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""CREATE TABLE IF NOT EXISTS expenses (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  date TEXT NOT NULL ,
+                  name TEXT  NOT NULL ,
+                  amount REAL NOT NULL,
+                  category TEXT NOT NULL,
+                  subcategory TEXT DEFAULT '',
+                  note TEXT DEFAULT ''
+                  )
+                  """)
+        conn.commit()
+
+
+init_db()  #calling above function to Initialize the database
 @mcp.tool()
 async def get_db_info() -> dict:
     """Diagnostics: returns DB path and writability info to debug read-only issues."""
@@ -63,27 +85,6 @@ async def get_db_info() -> dict:
         return info
     return await anyio.to_thread.run_sync(_probe)
 
-#Create a FastMCP server instance
-mcp = FastMCP(name = "expense-tracker")
-
-def init_db():
-    """Initializes the database."""
-    with sqlite3.connect(BD_PATH) as conn:
-        c = conn.cursor()
-        c.execute("""CREATE TABLE IF NOT EXISTS expenses (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  date TEXT NOT NULL ,
-                  name TEXT  NOT NULL ,
-                  amount REAL NOT NULL,
-                  category TEXT NOT NULL,
-                  subcategory TEXT DEFAULT '',
-                  note TEXT DEFAULT ''
-                  )
-                  """)
-        conn.commit()
-
-
-init_db()  #calling above function to Initialize the database
 
 @mcp.tool()
 async def add_expense(date: str, name: str, amount: float, category: str, subcategory: str = '', note: str = '') -> dict:
