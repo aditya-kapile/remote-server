@@ -1,3 +1,4 @@
+
 from fastmcp import FastMCP
 import os
 import sqlite3
@@ -103,14 +104,19 @@ async def add_expense(date: str, name: str, amount: float, category: str, subcat
 
 
 @mcp.tool()
-async def list_expenses() -> list[dict]:
-    """Returns a list of all expenses."""
+async def list_expenses(subcategory: str = '', note: str = '') -> list[dict]:
     def _op():
         with sqlite3.connect(BD_PATH) as conn:
-            cur = conn.execute("SELECT id, date, name, amount, category, subcategory, note FROM expenses ORDER BY id ASC")
+            base = "SELECT id, date, name, amount, category, subcategory, note FROM expenses"
+            clauses, params = [], []
+            if subcategory:
+                clauses.append("subcategory = ?"); params.append(subcategory)
+            if note:
+                clauses.append("note LIKE ?"); params.append(f"%{note}%")
+            where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+            cur = conn.execute(base + where + " ORDER BY id ASC", params)
             cols = [d[0] for d in cur.description]
-            rows = cur.fetchall()
-            return [dict(zip(cols, row)) for row in rows]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
     return await anyio.to_thread.run_sync(_op)
 
 
@@ -173,3 +179,6 @@ async def summarize_expenses(start_date: str, end_date: str) -> str:
 if __name__ == "__main__":
     # mcp.run()   #command to run the server  : for local server
     mcp.run(transport="http", host="0.0.0.0" , port=8000)
+
+
+
