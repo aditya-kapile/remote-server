@@ -5,10 +5,63 @@ import anyio
 
 
 
-# Database path with cloud fallback to writable tmp
-_DB_DIR = os.getenv("TMPDIR", "/tmp") if os.getenv("FASTMCP_CLOUD") else os.path.dirname(__file__)
-os.makedirs(_DB_DIR, exist_ok=True)
+# Database path selection: prefer a writable temp dir in cloud or read-only environments
+_DEF_CODE_DIR = os.path.dirname(__file__)
+
+def _first_writable_dir(candidates: list[str]) -> str:
+    for d in candidates:
+        if not d:
+            continue
+        try:
+            os.makedirs(d, exist_ok=True)
+            test_path = os.path.join(d, ".write-test")
+            with open(test_path, "w", encoding="utf-8") as f:
+                f.write("ok")
+            os.remove(test_path)
+            return d
+        except Exception:
+            continue
+    return _DEF_CODE_DIR  # last resort
+
+# Candidate dirs: env-provided temps, /tmp, working dir 'data', then code dir
+_candidates = [
+    os.getenv("TMPDIR"), os.getenv("TMP"), os.getenv("TEMP"),
+    "/tmp",
+    os.path.join(os.getcwd(), "data"),
+    _DEF_CODE_DIR,
+]
+_DB_DIR = _first_writable_dir(_candidates)
 BD_PATH = os.path.join(_DB_DIR, "expense-tracker.db")
+
+@mcp.tool()
+async def get_db_info() -> dict:
+    """Diagnostics: returns DB path and writability info to debug read-only issues."""
+    def _probe():
+        info = {
+            "BD_PATH": BD_PATH,
+            "DB_DIR": os.path.dirname(BD_PATH),
+            "exists": os.path.exists(BD_PATH),
+            "dir_writable": os.access(os.path.dirname(BD_PATH), os.W_OK),
+            "file_writable": os.access(BD_PATH, os.W_OK) if os.path.exists(BD_PATH) else None,
+            "env": {
+                "FASTMCP_CLOUD": os.getenv("FASTMCP_CLOUD"),
+                "TMPDIR": os.getenv("TMPDIR"),
+                "TMP": os.getenv("TMP"),
+                "TEMP": os.getenv("TEMP"),
+            },
+        }
+        # Try writing a small temp file in DB directory
+        try:
+            test_path = os.path.join(os.path.dirname(BD_PATH), ".write-test")
+            with open(test_path, "w", encoding="utf-8") as f:
+                f.write("ok")
+            os.remove(test_path)
+            info["can_write_dir"] = True
+        except Exception as e:
+            info["can_write_dir"] = False
+            info["write_error"] = str(e)
+        return info
+    return await anyio.to_thread.run_sync(_probe)
 
 #Create a FastMCP server instance
 mcp = FastMCP(name = "expense-tracker")
