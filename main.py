@@ -1,10 +1,14 @@
 from fastmcp import FastMCP
 import os
 import sqlite3
+import anyio
 
 
-#Path to the database
-BD_PATH = os.path.join(os.path.dirname(__file__), "expense-tracker.db")
+
+# Database path with cloud fallback to writable tmp
+_DB_DIR = os.getenv("TMPDIR", "/tmp") if os.getenv("FASTMCP_CLOUD") else os.path.dirname(__file__)
+os.makedirs(_DB_DIR, exist_ok=True)
+BD_PATH = os.path.join(_DB_DIR, "expense-tracker.db")
 
 #Create a FastMCP server instance
 mcp = FastMCP(name = "expense-tracker")
@@ -16,12 +20,12 @@ def init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS expenses (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   date TEXT NOT NULL ,
-                  name TEXT  NOT NULL , 
-                  amount REAL NOT NULL, 
-                  category TEXT NOT NULL, 
-                  subcategory TEXT DEFAULT '', 
+                  name TEXT  NOT NULL ,
+                  amount REAL NOT NULL,
+                  category TEXT NOT NULL,
+                  subcategory TEXT DEFAULT '',
                   note TEXT DEFAULT ''
-                  ) 
+                  )
                   """)
         conn.commit()
 
@@ -29,69 +33,89 @@ def init_db():
 init_db()  #calling above function to Initialize the database
 
 @mcp.tool()
-def add_expense(date : str, name : str, amount : float, category : str, subcategory : str = '', note : str = '') -> None:
+async def add_expense(date: str, name: str, amount: float, category: str, subcategory: str = '', note: str = '') -> dict:
     """Adds an expense to the database."""
-    with sqlite3.connect(BD_PATH) as conn:
-        c = conn.cursor()
-        c.execute("INSERT INTO expenses (date, name, amount, category, subcategory, note) VALUES (?, ?, ?, ?, ?, ?)", (date, name, amount, category, subcategory, note))
-        
-        return {"status": "OK", "id": c.lastrowid}
+    def _op():
+        with sqlite3.connect(BD_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO expenses (date, name, amount, category, subcategory, note) VALUES (?, ?, ?, ?, ?, ?)",
+                (date, name, amount, category, subcategory, note),
+            )
+            conn.commit()
+            return {"status": "OK", "id": c.lastrowid}
+    return await anyio.to_thread.run_sync(_op)
 
 
 
 @mcp.tool()
-def list_expenses() -> list[dict]:
+async def list_expenses() -> list[dict]:
     """Returns a list of all expenses."""
-    with sqlite3.connect(BD_PATH) as c:
-        cur = c.execute("SELECT id, date, name, amount, category, subcategory, note FROM expenses ORDER BY ID ASC")
-
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    def _op():
+        with sqlite3.connect(BD_PATH) as conn:
+            cur = conn.execute("SELECT id, date, name, amount, category, subcategory, note FROM expenses ORDER BY id ASC")
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+            return [dict(zip(cols, row)) for row in rows]
+    return await anyio.to_thread.run_sync(_op)
 
 
 @mcp.tool()
-def delete_expense(id : int) -> None:
+async def delete_expense(id: int) -> None:
     """Deletes an expense from the database."""
-    with sqlite3.connect(BD_PATH) as conn:
-        c = conn.cursor()
-        c.execute("DELETE FROM expenses WHERE id = ?", (id,))
-        conn.commit()
+    def _op():
+        with sqlite3.connect(BD_PATH) as conn:
+            c = conn.cursor()
+            c.execute("DELETE FROM expenses WHERE id = ?", (id,))
+            conn.commit()
+    await anyio.to_thread.run_sync(_op)
 
 
 @mcp.tool()
-def update_expense(id : int, date : str, name : str, amount : float, category : str, subcategory : str = '', note : str = '') -> None:
+async def update_expense(id: int, date: str, name: str, amount: float, category: str, subcategory: str = '', note: str = '') -> dict:
     """Updates an expense in the database."""
-    with sqlite3.connect(BD_PATH) as conn:
-        c = conn.cursor()
-        c.execute("UPDATE expenses SET date = ?, name = ?, amount = ?, category = ?, subcategory = ?, note = ? WHERE id = ?", (date, name, amount, category, subcategory, note, id))
-        conn.commit()
-        return {"status": "OK"}
-        
+    def _op():
+        with sqlite3.connect(BD_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
+                "UPDATE expenses SET date = ?, name = ?, amount = ?, category = ?, subcategory = ?, note = ? WHERE id = ?",
+                (date, name, amount, category, subcategory, note, id),
+            )
+            conn.commit()
+            return {"status": "OK"}
+    return await anyio.to_thread.run_sync(_op)
+
 @mcp.tool()
-def summarize_expenses(start_date : str, end_date : str) -> str:
+async def summarize_expenses(start_date: str, end_date: str) -> str:
     """Summarize expenses by category within an inclusive date range."""
-    with sqlite3.connect(BD_PATH) as conn:
-        c = conn.cursor()
-        c.execute("SELECT category, SUM(amount) FROM expenses WHERE date BETWEEN ? AND ? GROUP BY category", (start_date, end_date))
-        results = c.fetchall()
+    def _fetch():
+        with sqlite3.connect(BD_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
+                "SELECT category, SUM(amount) FROM expenses WHERE date BETWEEN ? AND ? GROUP BY category",
+                (start_date, end_date),
+            )
+            return c.fetchall()
 
-        # Format results as a readable string
-        if not results:
-            return "No expenses found in the specified date range."
+    results = await anyio.to_thread.run_sync(_fetch)
 
-        summary = f"Expense Summary ({start_date} to {end_date}):\n"
-        summary += "-" * 50 + "\n"
-        total = 0
-        for category, amount in results:
-            summary += f"{category}: ${amount:.2f}\n"
-            total += amount
-        summary += "-" * 50 + "\n"
-        summary += f"Total: ${total:.2f}"
+    # Format results as a readable string
+    if not results:
+        return "No expenses found in the specified date range."
 
-        return summary
+    summary = f"Expense Summary ({start_date} to {end_date}):\n"
+    summary += "-" * 50 + "\n"
+    total = 0
+    for category, amount in results:
+        summary += f"{category}: ${amount:.2f}\n"
+        total += amount
+    summary += "-" * 50 + "\n"
+    summary += f"Total: ${total:.2f}"
 
-    
-      
+    return summary
+
+
+
 if __name__ == "__main__":
     # mcp.run()   #command to run the server  : for local server
     mcp.run(transport="http", host="0.0.0.0" , port=8000)
